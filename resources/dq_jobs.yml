@@ -1,10 +1,10 @@
 resources:
   jobs:
-    # Run after every deployment. Creates or upgrades tables and views, loads the metric catalog
-    # from the wheel, and rebuilds assignments.
+    # Run after every deployment. Creates the tables and views and loads the check YAML from the wheel
+    # into the DQX checks table.
     dq_deploy_config:
       name: dq-deploy-config-${bundle.target}
-      description: Create/upgrade framework tables and views, load the metric catalog, rebuild assignments.
+      description: Create framework tables and views, load the check YAML into the checks table.
       max_concurrent_runs: 1
       email_notifications:
         on_failure:
@@ -16,37 +16,23 @@ resources:
             dependencies:
               - ../dist/*.whl
       tasks:
-        - task_key: setup
+        - task_key: deploy_config
           environment_key: default
           python_wheel_task:
             package_name: dq_monitor
-            entry_point: dq-setup
-            parameters: ["--catalog", "${var.catalog}", "--schema", "${var.dq_schema}"]
-        - task_key: load_metrics
-          depends_on: [{task_key: setup}]
-          environment_key: default
-          python_wheel_task:
-            package_name: dq_monitor
-            entry_point: dq-load-metrics
-            parameters: ["--catalog", "${var.catalog}", "--schema", "${var.dq_schema}"]
-        - task_key: sync_assignments
-          depends_on: [{task_key: load_metrics}]
-          environment_key: default
-          python_wheel_task:
-            package_name: dq_monitor
-            entry_point: dq-sync-assignments
+            entry_point: dq-deploy-config
             parameters:
               - "--catalog"
               - "${var.catalog}"
               - "--schema"
               - "${var.dq_schema}"
-              - "--assignment-files"
-              - "${var.assignment_files}"
+              - "--check-files"
+              - "${var.check_files}"
 
-    # The scheduled run. Re-syncs assignments first so a YAML change deployed today is checked today.
+    # The scheduled run: DQX runs every table that has checks in the checks table.
     dq_daily_run:
       name: dq-daily-run-${bundle.target}
-      description: Rebuild assignments from YAML, then execute every enabled check.
+      description: Execute every deployed check with DQX and append the summary metrics to results.
       max_concurrent_runs: 1
       schedule:
         quartz_cron_expression: "0 30 5 * * ?"
@@ -59,20 +45,7 @@ resources:
         - environment_key: default
           spec: *dq_env_spec
       tasks:
-        - task_key: sync_assignments
-          environment_key: default
-          python_wheel_task:
-            package_name: dq_monitor
-            entry_point: dq-sync-assignments
-            parameters:
-              - "--catalog"
-              - "${var.catalog}"
-              - "--schema"
-              - "${var.dq_schema}"
-              - "--assignment-files"
-              - "${var.assignment_files}"
         - task_key: run_checks
-          depends_on: [{task_key: sync_assignments}]
           environment_key: default
           python_wheel_task:
             package_name: dq_monitor

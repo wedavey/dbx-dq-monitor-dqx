@@ -12,15 +12,15 @@ Databricks Asset Bundle (DAB) for **Databricks Free Edition**, hosting a config-
 ## Layout
 - `databricks.yml` – bundle, variables, targets, wheel artifact.
 - `resources/*.yml` – job definitions (auto-included).
-- `src/dq_framework/` – DQ monitoring service. Pure logic (`engine`, `rendering`, `evaluation`,
-  `assignments_sync`, `config_io`) has no Spark imports; `spark_io.py` and
-  `cli.py` (one entry point per job task) do the Spark I/O. `config/*.yml` (metric catalog,
-  assignments) and `sql/*.sql` ship inside the wheel as package data.
+- `src/dq_framework/` – DQ monitoring service, a thin layer over **DQX** (`databricks-labs-dqx`):
+  `checks_io.py` (load/validate the check YAML, no Spark session), `service.py` (deploy the checks
+  table, run DQX), `cli.py` (one entry point per job task), `synthetic.py` (dev/test data).
+  `config/*.yml` (checks) and `sql/*.sql` (views, example alerts) ship inside the wheel as package data.
 - `resources/dq_jobs.yml` – DQ jobs `dq_deploy_config`, `dq_daily_run`. The dev/test-only
   `dq_synthetic_smoke_test` job is declared under those targets in `databricks.yml`.
-- `docs/assignments.md` – how to onboard tables/columns to DQ checks.
-- `tests/` – pytest with a local SparkSession (`conftest.py`); `tests/helpers.py` holds DQ
-  builders; `tests/integration/` runs the metric SQL on local Spark.
+- `docs/checks.md` – how to onboard tables to DQ checks.
+- `tests/` – pytest with a local Delta-enabled SparkSession (`conftest.py`); `test_service.py` runs
+  deploy + DQX + views end to end on local Spark.
 
 ## Targets and variables
 | target | DQ schema | mode        |
@@ -31,10 +31,10 @@ Databricks Asset Bundle (DAB) for **Databricks Free Edition**, hosting a config-
 
 Variables: `catalog` (default `workspace`, the Free Edition catalog) and `dq_schema`
 (`dq_dev` / `dq_test` / `dq_prod`, holds the DQ tables). Other DQ variables:
-`assignment_files`, `schedule_status` (only prod is UNPAUSED), `ops_email`, `max_workers`.
+`check_files`, `schedule_status` (only prod is UNPAUSED), `ops_email`, `max_workers`.
 Reference them as `${var.catalog}` / `${var.dq_schema}`. DQ tables in
-`<catalog>.<dq_schema>`: `metric_catalog`, `assignments`, `assignment_issues`, `results` plus
-`v_*` views. The synthetic test data lives in the fixed schema `dq_synthetic` (shared by dev
+`<catalog>.<dq_schema>`: `checks` and `results`
+(DQX's own table formats) plus `v_*` views. The synthetic test data lives in the fixed schema `dq_synthetic` (shared by dev
 and test).
 
 ## Conventions
@@ -46,23 +46,25 @@ and test).
 - Do not commit `dist/`, `.databricks/` or `.venv/`.
 
 ## DQ monitoring service
-Governance defines metrics (`metric_catalog.yml`); tables/columns are assigned in YAML
-(`assignments.yml`, one reviewed PR per change); `dq-run` scans each table once and appends to `results`.
-It is monitor/alert only. A failing check never fails the job.
-- All DQ entry points (`dq-*`) are in the `dq_monitor` wheel, so DQ tasks use
-  `package_name: dq_monitor`.
+Checks are plain DQX metadata checks in YAML (`checks.yml`, one reviewed PR per change), deployed by
+`dq-deploy-config` into the `checks` table. `dq-run` has DQX scan each table once and append its
+summary metrics (per-check failed-row counts) to `results`; views turn that into PASS/FAIL against each
+check's `user_metadata.max_fail_rate`. It is monitor/alert only: no quarantine, and a failing check never
+fails the job (an unreadable table does, after the other tables have run).
+- All DQ entry points (`dq-*`) are in the `dq_monitor` wheel, so DQ tasks use `package_name: dq_monitor`.
 - `dq-seed-synthetic` / `dq-verify-synthetic` refuse to run outside dev/test; never add the
   smoke-test job to prod.
-- Metric SQL: identifiers are validated and back-quoted, parameters only inside quoted literals.
-  Keep it that way.
-- Changing `metric_catalog.yml` is a governance-reviewed change.
-- `dq-validate-config` statically checks config (no Spark); run it after editing config.
+- Do not reimplement what DQX provides (check functions, checks table, execution, metrics). Pin DQX to
+  a minor version in `pyproject.toml` and re-run the tests when bumping it.
+- `user_metadata` (owner, data_product, max_fail_rate) is not part of DQX's rule fingerprint, so
+  `deploy_config` clears the `checks` table before saving; keep it that way or metadata edits are skipped.
+- `dq-validate-config` statically checks the YAML (no Spark session); run it after editing config.
 - Setup order after deploy: `dq_deploy_config`, then `dq_synthetic_smoke_test` (dev/test).
 
 ## Develop and test
 ```bash
 uv venv --python 3.11 && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest      # needs Java 17+
+.venv/bin/python -m pytest      # needs Java 17+ and network (Delta jars)
 .venv/bin/dq-validate-config    # static DQ config checks
 ```
 
@@ -72,7 +74,7 @@ Requires the Databricks CLI (>=0.250) and `uv`. Authenticate once with
 ```bash
 databricks bundle validate -t dev
 databricks bundle deploy   -t dev          # or test / prod
-databricks bundle run dq_deploy_config -t dev        # DQ tables, views, metrics, assignments
+databricks bundle run dq_deploy_config -t dev        # DQ tables, views, checks
 databricks bundle run dq_synthetic_smoke_test -t dev # dev/test only: end-to-end check
 databricks bundle destroy  -t dev          # clean up
 ```

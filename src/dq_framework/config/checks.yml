@@ -1,0 +1,33 @@
+# Checks: which DQX checks run on which tables. Deployed by pull request; `dq-deploy-config` loads this
+# file into the `checks` table (DQX's own checks-table format) and the daily run reads it from there.
+# See docs/checks.md and https://databrickslabs.github.io/dqx/docs/reference/quality_checks/ for the
+# list of check functions.
+#
+# One block per table. Each check is a plain DQX metadata check, plus these conventions:
+#   name            required, unique within the table. It is the check's id in `results`.
+#   criticality     `error` (alert the owner) or `warn` (only flagged when it keeps failing). Default: error.
+#   user_metadata   owner (required, by table or check), data_product, and max_fail_rate.
+#   max_fail_rate   share of rows allowed to fail before the check is FAIL (0.02 = 2%). Default 0.
+#                   Dataset-level checks (is_unique, is_aggr_*) mark every affected row, so use 0.
+#   filter          optional SQL predicate that scopes the check to some rows (native DQX).
+# `user_metadata` on the table is the default for every check in it. `${catalog}` is replaced per environment.
+#
+# - table: ${catalog}.sales.orders
+#   user_metadata: {owner: team@example.com, data_product: sales_orders}
+#   checks:
+#     - name: order_id_unique
+#       check: {function: is_unique, arguments: {columns: [order_id]}}
+#     - name: email_not_null
+#       criticality: warn
+#       check: {function: is_not_null, arguments: {column: email}}
+#       user_metadata: {max_fail_rate: 0.02}
+#     - name: country_format
+#       check: {function: regex_match, arguments: {column: country, regex: '^[A-Z]{2}$'}}
+#     - name: row_count_min
+#       check: {function: is_aggr_not_less_than, arguments: {column: '*', aggr_type: count, limit: 1000000}}
+#     - name: loaded_within_a_day
+#       check:
+#         function: is_aggr_not_less_than
+#         arguments: {column: loaded_at, aggr_type: max, limit: "current_timestamp() - INTERVAL 24 HOURS"}
+
+[]

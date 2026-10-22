@@ -2,37 +2,39 @@
 
 A Databricks Asset Bundle for **Databricks Free Edition** (serverless only; dev/test/prod are
 separated by schema in one workspace). It contains a config-driven **DQ monitoring service**
-(`src/dq_framework`).
+(`src/dq_framework`) built on [DQX](https://databrickslabs.github.io/dqx/), which does the check
+definitions, the execution and the result metrics. This repo adds the thin layer around it.
 
 ## DQ monitoring service
 
-Governance defines **metrics**; tables and columns are assigned to metrics through
-**assignments** (YAML files in the wheel, changed by pull request). A scheduled job runs the
-checks and appends to one standard **results** table that views, dashboards and alerts read.
-Monitor and alert only: nothing gates a pipeline.
+Checks are DQX checks written in YAML (`src/dq_framework/config/checks.yml`, changed by pull
+request) and deployed to a `checks` table. A scheduled job has DQX run every table in that table once
+and append per-check failure counts to one `results` table that views, dashboards and alerts read.
+Monitor and alert only: nothing gates a pipeline and no rows are quarantined.
 
 | Job | Targets | Does |
 |---|---|---|
-| `dq_deploy_config` | all | Create/upgrade tables and views, load the metric catalog, rebuild assignments |
-| `dq_daily_run` | all | Rebuild assignments, execute enabled checks (05:30 Sydney; unpaused only in prod) |
-| `dq_synthetic_smoke_test` | dev, test | Seed synthetic tables with known defects, run checks, assert outcomes |
+| `dq_deploy_config` | all | Create tables and views, load the check YAML into the `checks` table |
+| `dq_daily_run` | all | DQX runs every deployed check (05:30 Sydney; unpaused only in prod) |
+| `dq_synthetic_smoke_test` | dev, test | Seed synthetic tables with known defects, deploy, run, assert outcomes |
 
-Tables live in `<catalog>.<dq_schema>` (`dq_dev`, `dq_test`, `dq_prod`): `metric_catalog`,
-`assignments`, `assignment_issues`, `results`, and views `v_latest_results`, `v_daily_pass_rate`,
-`v_missing_results`, `v_onboarding_status`. Example DBSQL alerts are in
-`src/dq_framework/sql/alerts.sql`. See [docs/assignments.md](docs/assignments.md) for onboarding.
+Tables live in `<catalog>.<dq_schema>` (`dq_dev`, `dq_test`, `dq_prod`): `checks` and `results`
+(both DQX's own formats) and views `v_checks`, `v_check_results`, `v_latest_results`,
+`v_daily_pass_rate`, `v_missing_results`, `v_onboarding_status`. Example DBSQL alerts are in
+`src/dq_framework/sql/alerts.sql`. See [docs/checks.md](docs/checks.md) for onboarding.
 
-Design notes: one scan per table; per-check error isolation (a NULL metric is `ERROR`); results
-are a snapshot including threshold, severity and owner; identifiers validated and back-quoted.
+Design notes: one scan per table; a check passes while the share of failing rows stays within its
+`max_fail_rate`; one broken table does not stop the others (the job fails afterwards so ops hears
+about it); identifiers are validated.
 
-Open points for governance: NULL metric = `ERROR` vs `FAIL`; who reviews assignment PRs in prod;
-the run identity needs SELECT on monitored tables.
+Open points for governance: who reviews check PRs in prod (there is no metric catalog any more, so
+the DQX function list is the vocabulary); the run identity needs SELECT on monitored tables.
 
 ## Develop and test
 
 ```bash
 uv venv --python 3.11 && uv pip install -e ".[dev]"
-.venv/bin/python -m pytest      # needs Java 17+
+.venv/bin/python -m pytest      # needs Java 17+ and network access (Delta jars)
 .venv/bin/dq-validate-config
 ```
 
