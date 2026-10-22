@@ -10,11 +10,11 @@ variables:
     default: workspace
 
   dq_schema:
-    description: Schema for the DQ monitoring tables (metric_catalog, assignments, results, views).
+    description: Schema for the DQ monitoring tables (checks, results, views).
     default: dq_dev
-  assignment_files:
-    description: Comma-separated YAML assignment files shipped in the wheel (relative to dq_framework/config).
-    default: assignments.yml
+  check_files:
+    description: Comma-separated YAML check files shipped in the wheel (relative to dq_framework/config).
+    default: checks.yml
   schedule_status:
     description: PAUSED or UNPAUSED for the daily DQ run (development mode pauses it regardless).
     default: PAUSED
@@ -40,14 +40,14 @@ targets:
     mode: development # prefixes resource names with [dev <user>] and pauses schedules
     variables:
       dq_schema: dq_dev
-      assignment_files: assignments.yml,dev/synthetic_assignments.yml
+      check_files: checks.yml,dev/synthetic_checks.yml
     resources:
       jobs:
         dq_synthetic_smoke_test: &dq_synthetic_smoke_test
           name: dq-synthetic-smoke-test-${bundle.target}
           description: >-
-            Dev/test only. Seeds synthetic tables with known defects, rebuilds assignments,
-            runs the checks and asserts the outcomes match synthetic.py. Run after each deployment.
+            Dev/test only. Seeds synthetic tables with known defects, deploys the checks,
+            runs them and asserts the outcomes match synthetic.py. Run after each deployment.
           max_concurrent_runs: 1
           email_notifications:
             on_failure:
@@ -65,21 +65,21 @@ targets:
                 package_name: dq_monitor
                 entry_point: dq-seed-synthetic
                 parameters: ["--catalog", "${var.catalog}", "--environment", "${bundle.target}"]
-            - task_key: sync_assignments
+            - task_key: deploy_config
               depends_on: [{task_key: seed}]
               environment_key: default
               python_wheel_task:
                 package_name: dq_monitor
-                entry_point: dq-sync-assignments
+                entry_point: dq-deploy-config
                 parameters:
                   - "--catalog"
                   - "${var.catalog}"
                   - "--schema"
                   - "${var.dq_schema}"
-                  - "--assignment-files"
-                  - "${var.assignment_files}"
+                  - "--check-files"
+                  - "${var.check_files}"
             - task_key: run_checks
-              depends_on: [{task_key: sync_assignments}]
+              depends_on: [{task_key: deploy_config}]
               environment_key: default
               python_wheel_task:
                 package_name: dq_monitor
@@ -96,7 +96,7 @@ targets:
   test:
     variables:
       dq_schema: dq_test
-      assignment_files: assignments.yml,dev/synthetic_assignments.yml
+      check_files: checks.yml,dev/synthetic_checks.yml
     resources:
       jobs:
         dq_synthetic_smoke_test: *dq_synthetic_smoke_test

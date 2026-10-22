@@ -1,19 +1,18 @@
 [project]
 name = "dq_monitor"
 version = "0.1.0"
-description = "Config-driven data quality monitoring service for Databricks Free Edition"
+description = "Config-driven data quality monitoring service for Databricks Free Edition, built on DQX"
 requires-python = ">=3.10"
-# pyspark comes from the Databricks runtime, so it is only a dev dependency.
-dependencies = ["pyyaml>=6"]
+# pyspark, pandas and databricks-sdk come with the Databricks runtime. DQX is the compute engine.
+dependencies = ["pyyaml>=6", "databricks-labs-dqx>=0.16,<0.17"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyspark>=3.5,<4"]
+# delta-spark: the checks table is written with DQX's Delta-only replaceWhere/DELETE paths.
+dev = ["pytest>=8", "pyspark>=4.0", "delta-spark>=4.0", "pandas", "pyarrow"]
 
 [project.scripts]
 # DQ monitoring service: each entry point is one task in a job (python_wheel_task -> entry_point).
-dq-setup = "dq_framework.cli:setup_main"
-dq-load-metrics = "dq_framework.cli:load_metrics_main"
-dq-sync-assignments = "dq_framework.cli:sync_assignments_main"
+dq-deploy-config = "dq_framework.cli:deploy_config_main"
 dq-run = "dq_framework.cli:run_main"
 dq-validate-config = "dq_framework.cli:validate_config_main"
 dq-seed-synthetic = "dq_framework.cli:seed_synthetic_main"

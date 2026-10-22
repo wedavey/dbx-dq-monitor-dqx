@@ -1,7 +1,7 @@
 """Synthetic data for dev/test: tables with known defects and the outcomes we expect.
 
 Defect rates are deterministic (every Nth row), so expected PASS/FAIL results are exact. The smoke
-test job runs seed -> sync -> run -> verify after each dev/test deployment. Never runs in prod.
+test job runs seed -> deploy-config -> run -> verify after each dev/test deployment. Never runs in prod.
 """
 
 from __future__ import annotations
@@ -35,56 +35,39 @@ def customer_rows(now: datetime, n: int = CUSTOMERS_N) -> list[tuple]:
 
 
 def order_rows(now: datetime, n: int = ORDERS_N) -> list[tuple]:
-    """Clean and fresh, but only 5,000 rows (the assignment asks for 10,000)."""
+    """Clean and fresh, but only 5,000 rows (the row_count_min check asks for 10,000)."""
     statuses = ("NEW", "PAID", "SHIPPED")
     return [(i, 10.0 + (i % 90), statuses[i % 3], now) for i in range(n)]
 
 
-def _key(catalog: str, table: str, column: str, metric: str) -> str:
-    return f"{catalog}.{SYNTHETIC_SCHEMA}.{table}|{column}|{metric}".lower()
-
-
-def expected_status(catalog: str) -> dict[str, str]:
-    k = lambda t, c, m: _key(catalog, t, c, m)  # noqa: E731
+def expected_status(catalog: str) -> dict[tuple[str, str], str]:
+    """{(table, check name): status} for the checks in config/dev/synthetic_checks.yml."""
+    c, o = f"{catalog}.{SYNTHETIC_SCHEMA}.customers".lower(), f"{catalog}.{SYNTHETIC_SCHEMA}.orders".lower()
     return {
-        k("customers", "customer_id", "duplicate_pct"): "PASS",
-        k("customers", "email", "null_pct"): "FAIL",  # 5% > 2%
-        k("customers", "email", "regex_fail_pct"): "PASS",
-        k("customers", "country_code", "regex_fail_pct"): "FAIL",  # 2% > 1%
-        k("customers", "loaded_at", "hours_since_load"): "FAIL",  # ~48h > 24h
-        k("customers", "", "row_count"): "PASS",  # 1000 >= 500
-        k("orders", "order_id", "duplicate_pct"): "PASS",
-        k("orders", "order_id", "null_pct"): "PASS",
-        k("orders", "amount", "null_pct"): "PASS",  # threshold 0.01
-        k("orders", "status", "regex_fail_pct"): "PASS",  # custom regex
-        k("orders", "loaded_at", "hours_since_load"): "PASS",
-        k("orders", "", "row_count"): "FAIL",  # 5000 < 10000
+        (c, "customer_id_unique"): "PASS",
+        (c, "email_not_null"): "FAIL",  # 5% null > 2% allowed
+        (c, "email_format"): "PASS",  # nulls are not format failures
+        (c, "country_code_format"): "FAIL",  # 2% bad > 1% allowed
+        (c, "loaded_within_a_day"): "FAIL",  # ~48h old
+        (c, "row_count_min"): "PASS",  # 1000 >= 500
+        (o, "order_id_unique"): "PASS",
+        (o, "order_id_not_null"): "PASS",
+        (o, "amount_not_null"): "PASS",  # no nulls
+        (o, "status_valid"): "PASS",
+        (o, "loaded_within_a_day"): "PASS",
+        (o, "row_count_min"): "FAIL",  # 5000 < 10000
     }
 
 
-EXPECTED_ISSUES = (("ERROR", "no_such_column"),)  # the deliberately bad YAML row
-
-
-def verify(
-    catalog: str,
-    results: Iterable[Mapping[str, Any]],
-    issues: Iterable[Mapping[str, Any]],
-) -> list[str]:
-    """Returns a list of mismatches; empty means the framework behaved as designed."""
-    problems: list[str] = []
+def verify(catalog: str, results: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Returns a list of mismatches; empty means the service behaved as designed."""
     prefix = f"{catalog}.{SYNTHETIC_SCHEMA}.".lower()
-    latest = {r["assignment_id"].lower(): r["status"] for r in results
-              if r["assignment_id"].lower().startswith(prefix)}  # fmt: skip
-    for key, want in expected_status(catalog).items():
-        got = latest.get(key)
-        if got != want:
-            problems.append(f"{key}: expected {want}, got {got}")
-    for key in sorted(set(latest) - set(expected_status(catalog))):
-        problems.append(f"{key}: unexpected result (status {latest[key]})")
-    issue_list = list(issues)
-    for severity, text in EXPECTED_ISSUES:
-        if not any(i["severity"] == severity and text in (i["message"] or "") for i in issue_list):
-            problems.append(f"expected a {severity} issue mentioning '{text}'")
+    latest = {(r["table_name"].lower(), r["check_name"]): r["status"] for r in results
+              if r["table_name"].lower().startswith(prefix)}  # fmt: skip
+    want = expected_status(catalog)
+    problems = [f"{t} | {n}: expected {w}, got {latest.get((t, n))}" for (t, n), w in want.items()
+                if latest.get((t, n)) != w]  # fmt: skip
+    problems += [f"{t} | {n}: unexpected result (status {latest[(t, n)]})" for t, n in sorted(set(latest) - set(want))]
     return problems
 
 

@@ -1,0 +1,44 @@
+# Synthetic checks for dev/test only (loaded when the bundle variable check_files lists
+# dev/synthetic_checks.yml). They target the tables created by `dq-seed-synthetic`.
+# Expected outcomes live in dq_framework/synthetic.py and are asserted by `dq-verify-synthetic`.
+
+- table: ${catalog}.dq_synthetic.customers
+  user_metadata: {owner: synthetic-owner@example.com, data_product: synthetic_customers}
+  checks:
+    - name: customer_id_unique
+      check: {function: is_unique, arguments: {columns: [customer_id]}}
+    - name: email_not_null
+      check: {function: is_not_null, arguments: {column: email}}
+      user_metadata: {max_fail_rate: 0.02}
+    - name: email_format
+      check: {function: regex_match, arguments: {column: email, regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$'}}
+      user_metadata: {max_fail_rate: 0.01}
+    - name: country_code_format
+      check: {function: regex_match, arguments: {column: country_code, regex: '^[A-Z]{2}$'}}
+      user_metadata: {max_fail_rate: 0.01}
+    - name: loaded_within_a_day
+      check:
+        function: is_aggr_not_less_than
+        arguments: {column: loaded_at, aggr_type: max, limit: "current_timestamp() - INTERVAL 24 HOURS"}
+    - name: row_count_min
+      check: {function: is_aggr_not_less_than, arguments: {column: '*', aggr_type: count, limit: 500}}
+
+- table: ${catalog}.dq_synthetic.orders
+  user_metadata: {owner: synthetic-owner@example.com, data_product: synthetic_orders}
+  checks:
+    - name: order_id_unique
+      check: {function: is_unique, arguments: {columns: [order_id]}}
+    - name: order_id_not_null
+      check: {function: is_not_null, arguments: {column: order_id}}
+    - name: amount_not_null
+      criticality: warn
+      check: {function: is_not_null, arguments: {column: amount}}
+      user_metadata: {max_fail_rate: 0.01}
+    - name: status_valid
+      check: {function: regex_match, arguments: {column: status, regex: '^(NEW|PAID|SHIPPED)$'}}
+    - name: loaded_within_a_day
+      check:
+        function: is_aggr_not_less_than
+        arguments: {column: loaded_at, aggr_type: max, limit: "current_timestamp() - INTERVAL 24 HOURS"}
+    - name: row_count_min
+      check: {function: is_aggr_not_less_than, arguments: {column: '*', aggr_type: count, limit: 10000}}
