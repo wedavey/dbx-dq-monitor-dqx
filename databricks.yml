@@ -1,0 +1,111 @@
+# Databricks Asset Bundle for Databricks Free Edition (serverless compute only).
+# dev / test / prod all live in ONE workspace and are separated by schema.
+# DQ jobs are in resources/dq_jobs.yml; the dev/test-only smoke test is defined here.
+bundle:
+  name: dq_monitor
+
+variables:
+  catalog:
+    description: Unity Catalog catalog to write to (Free Edition default is the workspace catalog).
+    default: workspace
+
+  dq_schema:
+    description: Schema for the DQ monitoring tables (metric_catalog, assignments, results, views).
+    default: dq_dev
+  assignment_files:
+    description: Comma-separated YAML assignment files shipped in the wheel (relative to dq_framework/config).
+    default: assignments.yml
+  schedule_status:
+    description: PAUSED or UNPAUSED for the daily DQ run (development mode pauses it regardless).
+    default: PAUSED
+  ops_email:
+    description: Notified when a DQ framework job fails (not when a data quality check fails).
+    default: dq-platform@example.com
+  max_workers:
+    description: Tables scanned in parallel by the DQ runner.
+    default: "4"
+
+artifacts:
+  dq_monitor_wheel:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    default: true
+    mode: development # prefixes resource names with [dev <user>] and pauses schedules
+    variables:
+      dq_schema: dq_dev
+      assignment_files: assignments.yml,dev/synthetic_assignments.yml
+    resources:
+      jobs:
+        dq_synthetic_smoke_test: &dq_synthetic_smoke_test
+          name: dq-synthetic-smoke-test-${bundle.target}
+          description: >-
+            Dev/test only. Seeds synthetic tables with known defects, rebuilds assignments,
+            runs the checks and asserts the outcomes match synthetic.py. Run after each deployment.
+          max_concurrent_runs: 1
+          email_notifications:
+            on_failure:
+              - ${var.ops_email}
+          environments:
+            - environment_key: default
+              spec:
+                environment_version: "3"
+                dependencies:
+                  - dist/*.whl
+          tasks:
+            - task_key: seed
+              environment_key: default
+              python_wheel_task:
+                package_name: dq_monitor
+                entry_point: dq-seed-synthetic
+                parameters: ["--catalog", "${var.catalog}", "--environment", "${bundle.target}"]
+            - task_key: sync_assignments
+              depends_on: [{task_key: seed}]
+              environment_key: default
+              python_wheel_task:
+                package_name: dq_monitor
+                entry_point: dq-sync-assignments
+                parameters:
+                  - "--catalog"
+                  - "${var.catalog}"
+                  - "--schema"
+                  - "${var.dq_schema}"
+                  - "--assignment-files"
+                  - "${var.assignment_files}"
+            - task_key: run_checks
+              depends_on: [{task_key: sync_assignments}]
+              environment_key: default
+              python_wheel_task:
+                package_name: dq_monitor
+                entry_point: dq-run
+                parameters: ["--catalog", "${var.catalog}", "--schema", "${var.dq_schema}", "--max-workers", "${var.max_workers}"]
+            - task_key: verify
+              depends_on: [{task_key: run_checks}]
+              environment_key: default
+              python_wheel_task:
+                package_name: dq_monitor
+                entry_point: dq-verify-synthetic
+                parameters: ["--catalog", "${var.catalog}", "--schema", "${var.dq_schema}", "--environment", "${bundle.target}"]
+
+  test:
+    variables:
+      dq_schema: dq_test
+      assignment_files: assignments.yml,dev/synthetic_assignments.yml
+    resources:
+      jobs:
+        dq_synthetic_smoke_test: *dq_synthetic_smoke_test
+    workspace:
+      root_path: ~/.bundle/${bundle.name}/${bundle.target}
+
+  prod:
+    variables:
+      dq_schema: dq_prod
+      schedule_status: UNPAUSED
+    workspace:
+      root_path: ~/.bundle/${bundle.name}/${bundle.target}
